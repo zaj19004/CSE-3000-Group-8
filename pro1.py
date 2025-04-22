@@ -1,107 +1,106 @@
 """
-# Bias Analysis of Political News on CNN, Fox News, and The New York Times
+# Bias Analysis via NewsAPI for CNN and Fox News
 
 This script demonstrates how to:
-1. Fetch the latest political news articles via RSS feeds.
-2. Extract full article text using `newspaper3k`.
+1. Fetch political news from CNN and Fox News using NewsAPI.org.
+2. Require an API key stored in an environment variable.
 3. Perform sentiment analysis with NLTK's VADER as a proxy for bias.
-4. Compare sentiment distributions across sources using ANOVA.
-5. Visualize results with boxplots.
+4. Visualize and statistically compare sentiment distributions across sources.
 
-## Getting Started
+## Setup and API Key
 
 1. **Install required packages**:
    ```bash
-   pip install feedparser newspaper3k nltk pandas matplotlib scipy
+   pip install requests pandas nltk matplotlib scipy
    ```
-2. **Download NLTK data**:
+2. **API Registration**:
+   - **NewsAPI.org**: Sign up at https://newsapi.org to get your `NEWSAPI_KEY`.
+3. **Environment Variable** (set this in your Codespace):
+   ```bash
+   export NEWSAPI_KEY="3c5ab6485e724c78a08c3a5de9248cb1"
+   ```
+4. **Download NLTK data**:
    ```bash
    python -m nltk.downloader vader_lexicon
    ```
-3. Run this script in a Jupyter Notebook or as a standalone `.py` file.
 
-Feel free to increase the number of articles per source, add more bias metrics (e.g., keyword frequency), or use transformer-based classifiers for deeper analysis.
+## Script
 """
-
-import feedparser
-from newspaper import Article
+import os
+import requests
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.stats import f_oneway
 
-# Step 1: Define RSS feed URLs for political sections
-feeds = {
-    'CNN': 'http://rss.cnn.com/rss/cnn_allpolitics.rss',
-    'Fox News': 'http://feeds.foxnews.com/foxnews/politics',
-    'NYT': 'https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml'
-}
+# Load API key from environment
+NEWSAPI_KEY = os.getenv('NEWSAPI_KEY')
+if not NEWSAPI_KEY:
+    raise RuntimeError('Please set the NEWSAPI_KEY environment variable')
 
-# Step 2: Function to fetch and parse articles
+# Step 1: Fetch from NewsAPI for CNN and Fox News
 
-def fetch_articles(feed_url, max_articles=20):
+def fetch_from_newsapi(sources, page_size=20):
     """
-    Fetch up to `max_articles` articles from the given RSS feed URL.
-    Returns a list of dicts with keys: title, text, published.
+    Fetch top headlines from specified sources via NewsAPI.
+    Returns a list of dicts with keys: source, title, text, published.
     """
-    feed = feedparser.parse(feed_url)
-    entries = feed.entries[:max_articles]
+    url = 'https://newsapi.org/v2/top-headlines'
+    params = {
+        'sources': ','.join(sources),
+        'pageSize': page_size,
+        'apiKey': NEWSAPI_KEY
+    }
+    resp = requests.get(url, params=params)
+    resp.raise_for_status()
+    data = resp.json()
     articles = []
-    for entry in entries:
-        try:
-            art = Article(entry.link)
-            art.download()
-            art.parse()
-            articles.append({
-                'title': entry.title,
-                'text': art.text,
-                'published': entry.published
-            })
-        except Exception as e:
-            print(f"Error fetching {entry.link}: {e}")
+    for art in data.get('articles', []):
+        # Use content if available, otherwise description
+        text = art.get('content') or art.get('description') or ''
+        articles.append({
+            'source': art['source']['name'],
+            'title': art['title'],
+            'text': text,
+            'published': art['publishedAt']
+        })
     return articles
 
-# Collect data for all sources
-records = []
-for source, url in feeds.items():
-    print(f"Fetching articles from {source}...")
-    for art in fetch_articles(url, max_articles=20):
-        records.append({
-            'source': source,
-            'title': art['title'],
-            'text': art['text'],
-            'published': art['published']
-        })
+# Collect articles for CNN and Fox News
+df_records = []
+for rec in fetch_from_newsapi(['cnn', 'fox-news'], page_size=20):
+    df_records.append(rec)
 
-df = pd.DataFrame(records)
-print(f"Collected {len(df)} articles total\n")
+# Build DataFrame
+df = pd.DataFrame(df_records)
+print(f"Collected {len(df)} articles total")
 
-# Step 3: Sentiment Analysis using VADER
-nltk.download('vader_lexicon')
+# Step 2: Sentiment Analysis using VADER
+nltk.download('vader_lexicon', quiet=True)
 sia = SentimentIntensityAnalyzer()
-df['sentiment'] = df['text'].apply(lambda txt: sia.polarity_scores(txt)['compound'])
+df['sentiment'] = df['text'].apply(lambda txt: sia.polarity_scores(txt).get('compound', 0.0))
 
-# Step 4: Visualize sentiment distributions
+# Step 3: Visualize sentiment distributions
 plt.figure(figsize=(8, 6))
 df.boxplot(column='sentiment', by='source')
 plt.title('Sentiment Distribution by News Source')
-plt.suptitle('')  # remove the automatic subtitle
+plt.suptitle('')  # remove automatic subtitle
 plt.xlabel('Source')
 plt.ylabel('Compound Sentiment Score')
-plt.show()
+plt.savefig('sentiment_boxplot.png', dpi=300, bbox_inches='tight')
+print("Saved boxplot to sentiment_boxplot.png")
 
-# Step 5: Statistical test (one-way ANOVA)
-groups = [group['sentiment'].values for _, group in df.groupby('source')]
+# Step 4: Statistical test (one-way ANOVA)
+groups = [grp['sentiment'].values for _, grp in df.groupby('source')]
 stat, p_value = f_oneway(*groups)
 print(f"ANOVA results: F = {stat:.2f}, p = {p_value:.3f}")
 if p_value < 0.05:
-    print("→ There is a statistically significant difference in sentiment across sources.")
+    print("→ Statistically significant difference in sentiment across sources.")
 else:
     print("→ No significant difference in sentiment detected.")
 
-# ----- Next Steps & Extensions -----
-# • Increase `max_articles` for more robust findings.
-# • Add keyword-frequency analysis for political terms (e.g., 'Democrat', 'Republican').
-# • Incorporate transformer-based bias classifiers (Hugging Face).
-# • Compare against real-world benchmarks or implement KL-divergence metrics.
+# ----- Extensions -----
+# • Increase page_size or implement pagination for deeper sampling.
+# • Add keyword-frequency analysis for political terms.
+# • Incorporate transformer-based political-bias classifiers.
